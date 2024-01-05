@@ -1,0 +1,241 @@
+function onOpen() {
+  var ss = SpreadsheetApp.getActive()
+  var items = [
+      {name: 'Start', functionName: 'CalculateWorkingTime'}
+   ];
+  ss.addMenu('CalculateWorkingTime',items)
+}
+// =========================================================================================
+function prepareTempSheet(maxPause) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = sheet.getDataRange().getValues();
+
+  var range = sheet.getDataRange();
+  range.clearContent();
+
+  var i = 0;
+
+  while (i < data.length) {
+    // удаляем строки отмененных поездок
+    if (data[i][3] === "storniert") {
+      data.splice(i,1);
+      continue;
+    }
+
+    // удаляем строку заголовков
+    if (data[i][0] === "Auftragseingang") {
+      data.splice(i,1);
+      continue;
+    }
+    
+    // если время получения заказа не известно, то ставим время нача поездки
+    if (data[i][1] === "NaT") {
+      data[i][1] = data[i][4];
+    }
+
+    i++;
+  }
+
+    // создаем файл с водителями
+    // выбираем месяц
+  var currentMonth = new Date(data[1][1]).getMonth() + 1;
+  var currentYear = new Date(data[1][1]).getFullYear();
+
+  var spreadSheet = SpreadsheetApp.create("Fartenbuch_" + currentMonth + '_' + currentYear + ' ' + maxPause + ' min');
+  var sheet = spreadSheet.getActiveSheet();
+
+  // заносим данные в созданную таблицу
+  sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
+
+  sortByDate(sheet);
+
+  return spreadSheet;
+}
+
+// =========================================================================================
+function CalculateWorkingTime() {
+  // if (!displayPrompt) {
+  //   Logger.log("access denied!!!");
+  //   return;
+  // }
+  var maxPause = 20;
+  var spreadSheet = prepareTempSheet(maxPause);
+  var sheet = spreadSheet.getActiveSheet();
+
+  // получаем данные
+  var data = sheet.getDataRange().getValues();
+
+  // Просчитываем паузы между поездками
+  data[data.length-1][11] = 0;
+
+  for (var i = 0; i< data.length-1; i++) {
+    var startTime = data[i+1][1];
+    var endTime = data[i][5];
+    var difference = (startTime - endTime) / (1000*60);
+    if (difference > maxPause) {
+      data[i][11] = difference
+    } else {
+      data[i][11] = 0;
+    }
+  }
+
+ // записываем в файл вместе с паузами
+  sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
+
+  // --------------------------------------------------------------  
+  // обнуляем глобальные переменные
+
+  var arrayIndex = 0;
+  var i = 0;
+  var newData = [];
+
+  // --------------------------------------------------------------  
+
+  while (i < data.length) {
+
+    // обнуляем переменные
+    var totalPauseString = "";
+    var totalPause = 0;
+    var startShiftTime = null;
+    var endShiftTime;
+    var driverName;
+
+    // считываем данные
+    driverName = data[i][7];
+    var row = data[i];
+    var startTime = new Date(row[1]);
+    var endTime = new Date(row[5]); // Столбец с временем окончания
+    var kennzeichen = row[6]; // Столбец с номером
+    var currentPause = row[11];
+
+    // проверяем, есть ли начало смены
+    if (startShiftTime === null) {
+      startShiftTime = startTime;
+    }
+
+    while (currentPause <=541 && !isLastRowCheck(i, data, driverName)) {
+      totalPause = totalPause + currentPause;
+      totalPauseString = totalPauseString + ' + ' + currentPause;
+      i++;
+      // считываем текущие данные
+      row = data[i];
+      startTime = new Date(row[1]);
+      endTime = new Date(row[5]);
+      currentPause = row[11]
+    }
+
+    // если пауза больше 120 или конец строки водителя, то это одна смена
+    endShiftTime = endTime;
+    // делаем запись в массив водителя
+    insertRecordInArray(newData, endShiftTime, startShiftTime, kennzeichen, totalPause, currentPause, arrayIndex, totalPauseString);
+
+    // проверка на водителя, если следующий водитель - другой, то создаем файл
+    if (isLastRowCheck(i, data, driverName)) {
+      arrayIndex = 0;
+      // если последний, создаем файл
+Logger.log("driverName" + driverName);
+      createDriverSheet(spreadSheet, newData, driverName);
+      var newData = [];
+    } else {
+      arrayIndex++;
+    }
+    i++;
+  }
+  // -------------------------------------------------------
+}
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// FUNCTIONS
+// -----------------------------------------------------------------------------------------------------------------------------
+function insertRecordInArray (newData, endShiftTime, startShiftTime, kennzeichen, totalPause, currentPause, arrayIndex, totalPauseString) {
+  var totalWorkingTime = ((endShiftTime - startShiftTime)) < 0 ? 0 : (endShiftTime - startShiftTime) / (1000*60);
+  var totalWorkingTimeToHours = totalWorkingTime/1440;
+  var totalWorkMinusPauseTimeToHours = (totalWorkingTime-totalPause)/1440;
+  var totalPausetoHours = totalPause/1440;
+  newData[arrayIndex] = [startShiftTime, startShiftTime, endShiftTime, totalWorkingTimeToHours, totalPausetoHours, totalWorkMinusPauseTimeToHours, kennzeichen ,currentPause/1440];  
+Logger.log(totalPauseString);
+}
+
+function isLastRowCheck(i, data, driverName) {
+  if (i === data.length - 1 || data[i+1][7] !== driverName) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+function createDriverSheet(spreadSheet, newData, driverName) {
+
+  var dateToDisplay = new Date(newData[0][2]);
+
+  // делаем шапку результирующей таблицы
+  newData.unshift(["Datum", "Schichtbeginn",	"Schichtende",	"Total Stunden",	"Total Pausenzeit", "Arbeitszeit",	"Kennzeichen", "Ruhezeiten"]);
+  newData.unshift(["ArbeitsZeitNachweis", "" , driverName, "","" , "Monat", dateToDisplay, ""]);
+
+  // Создаем новый лист
+  var id = spreadSheet.getId();
+  let ss = SpreadsheetApp.openById(id);
+  var newSheet = ss.insertSheet(driverName);
+  
+  // Устанавливаем формат каждой колонки
+  formatCollumnDates(newSheet, newData);
+
+  // заносим данные в созданную таблицу
+  newSheet.getRange(1, 1, newData.length, newData[0].length).setValues(newData);
+
+  // выделяем жирным месяц, год
+  newSheet.getRange(1,3, 1, 5).setFontWeight("bold");
+
+  // устанавливаем вывод даты
+  var dateColumnRange = newSheet.getRange(1, 4, 1, 4);
+  dateColumnRange.setNumberFormat("mm/yy");
+
+  // устанавливаем цвет суммирующей строки
+  newSheet.getRange(newData.length+1, 4, 1, 3).setBackground('#D3D3D3');
+  newSheet.getRange(newData.length+1, 4, 1, 3).setFontWeight("bold");
+
+  // доставляем формулу суммирования общего времени
+  setSumFormulas(newSheet, newData);
+
+  // скрываем колонку общего времени
+  let range = newSheet.getRange("D1");
+  newSheet.hideColumn(range);
+}
+
+function setSumFormulas(newSheet, newData){
+  var lastRow = newData.length + 1;
+    // Создаем формулы суммы для часов работы, часов простоя, результата
+  var formula1 = '=SUM(D3:D'+ (lastRow - 1) + ')';  
+  var formula2 = '=SUM(E3:E'+ (lastRow - 1) + ')';
+  var formula = '=SUM(F3:F'+ (lastRow - 1) + ')';
+    // Вставляем формулу в последнюю строку колонки
+  newSheet.getRange(lastRow, 4).setFormula(formula1);
+  newSheet.getRange(lastRow, 5).setFormula(formula2);
+  newSheet.getRange(lastRow, 6).setFormula(formula);
+}
+
+function formatCollumnDates(newSheet, newData){
+  // устанавливаем отображение даты
+  var dateColumnRange = newSheet.getRange(2, 1, newData.length, 1);
+  dateColumnRange.setNumberFormat("dd.mm.yyyy");
+
+  // устанавливаем отображение времени
+  var dateColumnRange = newSheet.getRange(2, 2, newData.length, 2);
+  dateColumnRange.setNumberFormat("hh:mm:ss");
+
+  var dateColumnRange = newSheet.getRange(2, 4, newData.length+1, 6);
+  dateColumnRange.setNumberFormat("[hh]:mm");
+
+  // длительность паузы как duration
+  var dateColumnRange = newSheet.getRange(2, 8, newData.length, 8);
+  dateColumnRange.setNumberFormat("[hh]:mm");
+}
+
+function sortByDate(sheet) {
+    // Получаем диапазон данных в столбце
+  var dataRange = sheet.getRange(1, 1, sheet.getLastRow(), 11);
+
+  // Сортируем данные по возрастанию
+  dataRange.sort(2);
+  dataRange.sort(8);
+}
